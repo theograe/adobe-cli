@@ -28,6 +28,8 @@ public static class AdobeCliDialogs {
       uint p; GetWindowThreadProcessId(h, out p);
       if (p == want && IsWindowVisible(h) && GetWindow(h, 4) != IntPtr.Zero) {
         var s = new StringBuilder(256); GetWindowText(h, s, 256); R r; GetWindowRect(h, out r);
+        // An app's own progress window (Premiere's "Encoding ..." during an export) is work going on, not a dialog.
+        if (System.Text.RegularExpressions.Regex.IsMatch(s.ToString(), @"^(Encoding|Exporting|Rendering|Progress)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) return true;
         o.Add("{\"id\":" + h.ToInt64() + ",\"on\":true,\"name\":\"" + s.ToString().Replace("\\", "\\\\").Replace("\"", "'") + "\",\"width\":" + (r.Ri - r.L) + ",\"height\":" + (r.B - r.T) + "}");
       }
       return true;

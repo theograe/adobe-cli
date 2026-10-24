@@ -6,6 +6,7 @@
 //   osascript -l JavaScript mac.js <app> blocking [baseline ids]     ->  the dialogs: on screen, or new since the baseline
 ObjC.import("AppKit");
 ObjC.import("CoreGraphics");
+var PROGRESS = /^(Encoding|Exporting|Rendering|Progress)\b/i;
 var APPS = { pr: "Adobe Premiere Pro", ae: "Adobe After Effects", au: "Adobe Audition" };
 function run(argv) {
   var want = argv[0], pid = Number(want);
@@ -27,5 +28,7 @@ function run(argv) {
   }).map(function (w) { var b = w.kCGWindowBounds || {}; return { id: w.kCGWindowNumber, on: !!w.kCGWindowIsOnscreen, name: w.kCGWindowName || "", width: b.Width, height: b.Height }; });
   if (mode === "ids") return found.map(function (w) { return w.id; }).join(",");
   if (mode === "blocking") found = found.filter(function (w) { return w.on || (argv.length > 2 && !baseline[w.id]); });
+  // An app's own progress window (Premiere's "Encoding …" during an export) is work going on, not a dialog to dismiss.
+  if (mode === "blocking") found = found.filter(function (w) { return !PROGRESS.test(w.name); });
   return JSON.stringify(found);
 }

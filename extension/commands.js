@@ -377,10 +377,11 @@ function filterNames(xml, trackId) {
 // ---- shots: score every frame of each clip's source range against the previous one (ffmpeg's scene score)
 // and report the first frame of each new shot as a sequence frame.
 function ffmpegPath() {
-  var list = [process.env.ADOBE_CLI_FFMPEG, "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "C:\\ffmpeg\\bin\\ffmpeg.exe"];
+  var list = [process.env.ADOBE_CLI_FFMPEG, "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "C:\\ffmpeg\\bin\\ffmpeg.exe",
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Microsoft", "WinGet", "Links", "ffmpeg.exe")];
   for (var i = 0; i < list.length; i++) if (list[i] && fs.existsSync(list[i])) return list[i];
   try { return childProcess.execSync(process.platform === "win32" ? "where ffmpeg" : "command -v ffmpeg", { encoding: "utf8" }).split(/\r?\n/)[0].trim(); } catch (e) {}
-  throw new Error("shots needs ffmpeg (Mac: brew install ffmpeg) or ADOBE_CLI_FFMPEG=/path/to/ffmpeg");
+  throw new Error("shots needs ffmpeg (Mac: brew install ffmpeg; Windows: winget install Gyan.FFmpeg) or ADOBE_CLI_FFMPEG=/path/to/ffmpeg");
 }
 
 function detectShots(result, args) {

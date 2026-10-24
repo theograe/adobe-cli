@@ -35,12 +35,26 @@ ALL_PORTS="$((47651 + OFFSET)) $((47652 + OFFSET)) $((47653 + OFFSET))"
 self="$0"
 while [ -L "$self" ]; do link=$(readlink "$self"); case "$link" in /*) self="$link" ;; *) self="$(dirname "$self")/$link" ;; esac; done
 EXT_DIR="$(cd "$(dirname "$self")/../extension" 2>/dev/null && pwd)"
-[ -f "$EXT_DIR/dialogs/mac.js" ] || EXT_DIR="$HOME/Library/Application Support/Adobe/CEP/extensions/com.adobecli.bridge"
-DIALOGS=""; [ "$(uname -s)" = Darwin ] && [ -f "$EXT_DIR/dialogs/mac.js" ] && DIALOGS="$EXT_DIR/dialogs/mac.js"
+# On Windows (Git Bash) the installed `adobe` is a copy, not a link, so the installed extension is the fallback there too.
+DIALOGS=""
+case "$(uname -s)" in
+  Darwin)
+    [ -f "$EXT_DIR/dialogs/mac.js" ] || EXT_DIR="$HOME/Library/Application Support/Adobe/CEP/extensions/com.adobecli.bridge"
+    [ -f "$EXT_DIR/dialogs/mac.js" ] && DIALOGS="$EXT_DIR/dialogs/mac.js" ;;
+  MINGW*|MSYS*|CYGWIN*)
+    [ -f "$EXT_DIR/dialogs/win.ps1" ] || EXT_DIR="$APPDATA/Adobe/CEP/extensions/com.adobecli.bridge"
+    [ -f "$EXT_DIR/dialogs/win.ps1" ] && DIALOGS="$EXT_DIR/dialogs/win.ps1" ;;
+esac
 app_key() { case "$(( $1 - OFFSET ))" in 47651) echo pr ;; 47652) echo ae ;; *) echo au ;; esac; }
+run_dialogs() {
+  case "$DIALOGS" in
+    *.ps1) powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(cygpath -w "$DIALOGS")" "$@" | tr -d '\r' ;;
+    *) /usr/bin/osascript -l JavaScript "$DIALOGS" "$@" ;;
+  esac
+}
 # The app's dialog-level windows before sending, so a dialog the script raises is new even on another desktop Space.
-baseline() { [ -n "$DIALOGS" ] && /usr/bin/osascript -l JavaScript "$DIALOGS" "$(app_key "$1")" ids 2>/dev/null; }
-dialogs() { /usr/bin/osascript -l JavaScript "$DIALOGS" "$(app_key "$1")" blocking "$BASELINE" 2>/dev/null; }
+baseline() { [ -n "$DIALOGS" ] && run_dialogs "$(app_key "$1")" ids 2>/dev/null; }
+dialogs() { [ -n "$DIALOGS" ] && run_dialogs "$(app_key "$1")" blocking "$BASELINE" 2>/dev/null; }
 
 json_string() { local s="${1//\\/\\\\}"; s="${s//\"/\\\"}"; printf '"%s"' "$s"; }
 
