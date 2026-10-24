@@ -29,6 +29,13 @@ var PR = {
         p = PR.openProject(t.project);
         if (!p) throw new Error("Premiere could not open " + t.project);
       }
+      // Premiere's QE scripting (new sequences, razor, transitions) finds projects by file name, so two open
+      // projects with the same name can send a command into the wrong one: refuse rather than guess.
+      for (var i = 0; i < app.projects.numProjects; i++) {
+        var other = app.projects[i];
+        if (other.name === p.name && !PR.samePath(other.path, p.path))
+          throw new Error("two open projects are named " + p.name + " (" + p.path + " and " + other.path + "): Premiere can't tell them apart when scripting, so a command could land in the wrong one. Close the other one, or give this project its own name.");
+      }
       return (t.proj = p);
     }
     if (t.sequence && t.sequence.length) { PR.sequence(); return t.proj; }
@@ -296,7 +303,10 @@ C["project-save"] = function (a) {
 
 C["project-close"] = function (a) {
   if (!a.save && !a.discard) throw new Error("say --save or --discard (unsaved changes are lost with --discard)");
-  var p = PR.project(), path = p.path;
+  // Closing goes through the project object itself (no QE), so a same-named project elsewhere doesn't matter here.
+  var t = ADOBECLI.target, p = t.project ? PR.openProject(t.project) : PR.project();
+  if (!p) throw new Error("no open project at " + t.project);
+  var path = p.path;
   p.closeDocument(a.save ? 1 : 0, 0);
   return { closed: path };
 };
@@ -331,9 +341,10 @@ C["seq-new"] = function (a) {
   if (!seq || before[String(seq.sequenceID)]) {
     seq = null;
     for (var i = 0; i < proj.sequences.numSequences; i++) if (!before[String(proj.sequences[i].sequenceID)]) seq = proj.sequences[i];
-    if (!seq) throw new Error("Premiere did not create the sequence");
+    if (!seq) throw new Error("Premiere did not create the sequence in " + proj.name);
     proj.openSequence(seq.sequenceID);
   }
+  if (!PR.sequenceIds(proj)[String(seq.sequenceID)]) throw new Error("Premiere made " + a.name + " in another open project, not " + proj.name + "; close the other project and run seq-new again");
   var s = seq.getSettings(), rate = new Time();
   // NTSC rates are exact fractions: 29.97 is 30000/1001.
   var exact = { "23.976": 24000 / 1001, "29.97": 30000 / 1001, "59.94": 60000 / 1001 }[String(a.fps)] || a.fps;
