@@ -252,7 +252,7 @@ function prepare(job) {
   if (found.rest.indexOf("--help") >= 0 || found.rest.indexOf("-h") >= 0) return { status: 200, body: describe(name, spec) };
   try {
     job.args = parseArgs(found.rest, withTargets(spec), job.cwd);
-    if (spec.before) spec.before(job.args);
+    if (spec.before) spec.before(job.args, job.cwd);
     if (spec.after && job.args.out) { try { fs.unlinkSync(job.args.out); } catch (e) {} }
   } catch (e) {
     return { status: 400, body: { ok: false, error: e.message, problems: e.problems, usage: describe(name, spec) } };

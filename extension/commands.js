@@ -29,6 +29,7 @@ var PR = {
 
   "import": { help: "Import media (video, audio, images, XML) into the project.",
     args: { files: { type: "files", required: true }, bin: { type: "string", help: "bin name, created if missing" } },
+    before: checkStreamStarts,
     example: "adobe pr import --files clip.mp4 music.mp3 --bin Media" },
   "items": { help: "List everything in the project panel.", args: {} },
 
@@ -51,12 +52,12 @@ var PR = {
       "audio-track": { type: "string", help: "where the source's audio goes (default: same number as the video track)" },
       mode: { type: "string", "default": "overwrite", help: "overwrite or insert" },
       "video-only": { type: "bool", help: "drop the audio (B-roll)" }, conform: { type: "bool", help: "interpret the file at the sequence frame rate so its frames land on sequence frames (changes its speed by the rate difference)" } },
-    example: "adobe pr place --source game.mp4 --in 12.5 --out 15 --at 0 --track V1" },
+    before: checkStreamStarts, example: "adobe pr place --source game.mp4 --in 12.5 --out 15 --at 0 --track V1" },
   "cut": { help: "Build a rough cut: place a list of source ranges back to back on V1/A1.",
     args: { cuts: { type: "json", required: true, help: "[{\"source\":\"a.mp4\",\"in\":1.2,\"out\":3.4}, …] (source optional with --source)" },
       source: { type: "string", help: "default source for cuts that don't name one" },
       at: { type: "time", "default": 0 }, track: { type: "string", "default": "V1" }, conform: { type: "bool", help: "interpret the file at the sequence frame rate so its frames land on sequence frames (changes its speed by the rate difference)" } },
-    example: "adobe pr cut --source interview.mp4 --cuts cuts.json" },
+    before: checkStreamStarts, example: "adobe pr cut --source interview.mp4 --cuts cuts.json" },
   "broll": { help: "Place a B-roll shot on V2 (video only).",
     args: { source: { type: "string", required: true }, "in": { type: "time" }, out: { type: "time" },
       at: { type: "time", required: true }, track: { type: "string", "default": "V2" }, conform: { type: "bool", help: "interpret the file at the sequence frame rate so its frames land on sequence frames (changes its speed by the rate difference)" } },
@@ -374,6 +375,38 @@ function filterNames(xml, trackId) {
   return names;
 }
 
+// ---- import, cut, place: refuse a file whose picture and sound don't start together. Premiere counts a clip's time
+// from its picture, so in/out points read off the sound (a transcript, a waveform) land on the wrong words. Section
+// downloads (yt-dlp --download-sections) start between keyframes and often begin with seconds of sound and no picture.
+function firstPts(probe, file, stream) {
+  try {
+    var out = childProcess.execFileSync(probe, ["-v", "error", "-select_streams", stream, "-show_entries", "packet=pts_time",
+      "-read_intervals", "%+#1", "-of", "csv=p=0", file], { encoding: "utf8", timeout: 15000, windowsHide: true }).trim().split(/\r?\n/)[0];
+    var t = parseFloat(out);
+    return isNaN(t) ? null : t;
+  } catch (e) { return null; }
+}
+
+function checkStreamStarts(args, cwd) {
+  var probe;
+  try { probe = ffmpegPath().replace(/ffmpeg(\.exe)?$/i, function (m, exe) { return "ffprobe" + (exe || ""); }); } catch (e) { return; }
+  if (!fs.existsSync(probe)) return;
+  var files = [].concat(args.files || [], args.source ? [args.source] : [],
+    Array.isArray(args.cuts) ? args.cuts.map(function (c) { return c && c.source; }) : []).filter(Boolean);
+  var seen = {}, problems = [];
+  files.forEach(function (f) {
+    var file = path.isAbsolute(f) ? f : path.resolve(cwd || process.cwd(), f);
+    if (seen[file] || !fs.existsSync(file)) return;
+    seen[file] = true;
+    var v = firstPts(probe, file, "v:0"), a = firstPts(probe, file, "a:0");
+    if (v === null || a === null || Math.abs(v - a) < 0.05) return;
+    problems.push(path.basename(file) + ": the picture starts " + Math.abs(v - a).toFixed(2) + " s " + (v > a ? "after" : "before") +
+      " the sound, so cut times read off the sound would land on the wrong words. Make a copy that starts both at the first frame: ffmpeg -ss " +
+      Math.max(v, a).toFixed(3) + " -i \"" + path.basename(file) + "\" -vf setpts=PTS-STARTPTS -af asetpts=PTS-STARTPTS <new name>.mp4, then take every time from the copy.");
+  });
+  if (problems.length) { var e = usage(problems.join(" ")); e.problems = problems; throw e; }
+}
+
 // ---- shots: score every frame of each clip's source range against the previous one (ffmpeg's scene score)
 // and report the first frame of each new shot as a sequence frame.
 function ffmpegPath() {
@@ -422,4 +455,4 @@ function run(cmd, argv) {
 
 function usage(message) { var e = new Error(message); e.usage = true; return e; }
 
-module.exports = { PPRO: PR, AEFT: AE, AUDT: AU, usage: usage, filterNames: filterNames, lint: lint };
+module.exports = { PPRO: PR, AEFT: AE, AUDT: AU, usage: usage, filterNames: filterNames, lint: lint, checkStreamStarts: checkStreamStarts };
