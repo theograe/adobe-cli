@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# adobe — drive Premiere Pro, After Effects and Audition from the terminal.
+#
+#   adobe pr <command> --option value …    Premiere Pro (ae: After Effects, au: Audition)
+#   adobe pr                               list Premiere commands (same for ae, au)
+#   adobe pr <command> --help              options for one command
+#   adobe <plugin> <command> …             a plug-in's command, in the app that has it (adobe grae render …)
+#   adobe status                           which apps are answering
+#   adobe queue                            what each app is running and what waits
+#   adobe plugins [add <folder> | remove <name>]
+#
+# Answers are JSON. Exit codes: 0 ok, 1 the command failed in the app, 2 bad arguments, 3 the app isn't reachable
+# or is blocked on a dialog. One command runs at a time per app; a waiting call says so on stderr.
+# ADOBE_CLI_HOLD=<id> keeps the app for your calls until `adobe <app> release` (or 30 s idle);
+# ADOBE_CLI_LABEL names you in the queue. Needs only curl.
+
+HOME_DIR="$HOME/.adobe-cli"
+TOKEN_FILE="$HOME_DIR/token"
+PLUGINS_FILE="$HOME_DIR/plugins"
+TIMEOUT="${ADOBE_CLI_TIMEOUT:-3600}"
+OFFSET="${ADOBE_CLI_PORT_OFFSET:-0}"
+
+usage() {
+  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+port_of() { case "$1" in pr|premiere) echo $((47651 + OFFSET)) ;; ae|aftereffects) echo $((47652 + OFFSET)) ;; au|audition) echo $((47653 + OFFSET)) ;; esac; }
+app_label() { case "$(( $1 - OFFSET ))" in 47651) echo "Premiere Pro" ;; 47652) echo "After Effects" ;; *) echo "Audition" ;; esac; }
+# Premiere and After Effects only load extensions once a project is open; Audition loads them at startup.
+app_fix() { [ "$(( $1 - OFFSET ))" = 47653 ] && echo "Window > Extensions > Adobe CLI (restart Audition once after install)" || echo "open a project, then Window > Extensions > Adobe CLI"; }
+app_process() { case "$(( $1 - OFFSET ))" in 47651) echo "Adobe Premiere Pro" ;; 47652) echo "After Effects" ;; *) echo "Adobe Audition" ;; esac; }
+ALL_PORTS="$((47651 + OFFSET)) $((47652 + OFFSET)) $((47653 + OFFSET))"
+
+# The extension folder (for dialogs/): next to this script in a clone, else the installed copy.
+self="$0"
+while [ -L "$self" ]; do link=$(readlink "$self"); case "$link" in /*) self="$link" ;; *) self="$(dirname "$self")/$link" ;; esac; done
+EXT_DIR="$(cd "$(dirname "$self")/../extension" 2>/dev/null && pwd)"
+[ -f "$EXT_DIR/dialogs/mac.js" ] || EXT_DIR="$HOME/Library/Application Support/Adobe/CEP/extensions/com.adobecli.bridge"
+DIALOGS=""; [ "$(uname -s)" = Darwin ] && [ -f "$EXT_DIR/dialogs/mac.js" ] && DIALOGS="$EXT_DIR/dialogs/mac.js"
+app_key() { case "$(( $1 - OFFSET ))" in 47651) echo pr ;; 47652) echo ae ;; *) echo au ;; esac; }
+# The app's dialog-level windows before sending, so a dialog the script raises is new even on another desktop Space.
+baseline() { [ -n "$DIALOGS" ] && /usr/bin/osascript -l JavaScript "$DIALOGS" "$(app_key "$1")" ids 2>/dev/null; }
+dialogs() { /usr/bin/osascript -l JavaScript "$DIALOGS" "$(app_key "$1")" blocking "$BASELINE" 2>/dev/null; }
+
+json_string() { local s="${1//\\/\\\\}"; s="${s//\"/\\\"}"; printf '"%s"' "$s"; }
+
+unreachable() {
+  local port="$1" label why
+  label=$(app_label "$port")
+  if pgrep -f "$(app_process "$port")" >/dev/null 2>&1; then
+    why="$label is running but Adobe CLI isn't answering: $(app_fix "$port"). If it isn't listed, run ./install.sh and restart $label."
+  else
+    why="$label isn't running. Open it, then $(app_fix "$port"), and try again."
+  fi
+  printf '{\n  "ok": false,\n  "error": %s\n}\n' "$(json_string "$why")"
+  exit 3
+}
+
+# One app's line for `adobe status`, with the fix when it isn't answering.
+ping_app() {
+  local port="$1" label out
+  label=$(app_label "$port")
+  out=$(curl -s --max-time 3 "http://127.0.0.1:$port/ping" 2>/dev/null)
+  if [ -n "$out" ]; then printf '%s' "$out" | tr -d '\n'; return; fi
+  if pgrep -f "$(app_process "$port")" >/dev/null 2>&1; then
+    printf '{"ok": false, "running": true, "fix": "%s is open but Adobe CLI is not answering: %s"}' "$label" "$(app_fix "$port")"
+  else
+    printf '{"ok": false, "running": false, "fix": "%s is not running: open it, then %s"}' "$label" "$(app_fix "$port")"
+  fi
+}
+
+token=$(cat "$TOKEN_FILE" 2>/dev/null)
+auth=(-H "X-Adobe-CLI-Token: $token")
+[ -n "${ADOBE_CLI_HOLD:-}" ] && auth+=(-H "X-Adobe-CLI-Hold: $ADOBE_CLI_HOLD")
+auth+=(-H "X-Adobe-CLI-Label: ${ADOBE_CLI_LABEL:-adobe $*}")
+
+plugins() {
+  mkdir -p "$HOME_DIR"
+  case "${1:-list}" in
+    list) cat "$PLUGINS_FILE" 2>/dev/null; return 0 ;;
+    add)
+      local dir name
+      dir="$(cd "${2:?adobe plugins add <folder>}" 2>/dev/null && pwd)" || { echo "adobe: no folder $2" >&2; return 2; }
+      [ -f "$dir/adobe-plugin.js" ] || { echo "adobe: $dir has no adobe-plugin.js" >&2; return 2; }
+      name="${3:-$(sed -n 's/^[[:space:]]*name:[[:space:]]*"\([a-z][a-z0-9-]*\)".*/\1/p' "$dir/adobe-plugin.js" | head -1)}"
+      [ -n "$name" ] || { echo "adobe: adobe-plugin.js has no name: \"…\"; pass one: adobe plugins add <folder> <name>" >&2; return 2; }
+      { grep -v "^$name	" "$PLUGINS_FILE" 2>/dev/null; printf '%s\t%s\n' "$name" "$dir"; } > "$PLUGINS_FILE.tmp" && mv "$PLUGINS_FILE.tmp" "$PLUGINS_FILE"
+      echo "added $name ($dir); run \`adobe pr reload\` / \`adobe ae reload\` in apps that are open" ;;
+    remove)
+      grep -v "^${2:?adobe plugins remove <name>}	" "$PLUGINS_FILE" > "$PLUGINS_FILE.tmp" 2>/dev/null; mv "$PLUGINS_FILE.tmp" "$PLUGINS_FILE"
+      echo "removed $2" ;;
+    *) echo "adobe plugins [list | add <folder> [name] | remove <name>]" >&2; return 2 ;;
+  esac
+}
+
+# Says on stderr what the app is busy with before we join its queue.
+queue_notice() {
+  local q summary
+  q=$(curl -s --max-time 2 "${auth[@]}" "http://127.0.0.1:$1/queue" 2>/dev/null)
+  # After Effects can't answer while it runs a script: no answer in 2 s from a running app means busy.
+  if [ $? -eq 28 ]; then echo "adobe: $(app_label "$1") is busy; queued" >&2; return 0; fi
+  summary=$(printf '%s' "$q" | sed -n 's/^  "summary": "\(.*\)",$/\1/p')
+  [ -n "$summary" ] && echo "adobe: $(app_label "$1") is busy ($summary); queued" >&2
+  return 0
+}
+
+case "${1:-}" in
+  pr|premiere|ae|aftereffects|au|audition) port=$(port_of "$1"); shift ;;
+  status)
+    printf '{\n  "premiere": %s,\n  "aftereffects": %s,\n  "audition": %s\n}\n' "$(ping_app $((47651 + OFFSET)))" "$(ping_app $((47652 + OFFSET)))" "$(ping_app $((47653 + OFFSET)))"
+    exit 0 ;;
+  queue)
+    for p in $ALL_PORTS; do printf '%s: ' "$(app_label "$p")"; curl -s --max-time 2 "${auth[@]}" "http://127.0.0.1:$p/queue" | tr -d '\n' || printf 'not answering'; echo; done
+    exit 0 ;;
+  plugins) shift; plugins "$@"; exit $? ;;
+  ""|-h|--help|help) usage; exit 0 ;;
+  *)
+    # A plug-in: the app whose table has the command answers it.
+    name="$1"
+    if ! grep -q "^$name	" "$PLUGINS_FILE" 2>/dev/null; then
+      echo "adobe: first word is pr (Premiere Pro), ae (After Effects), au (Audition) or a plug-in (adobe plugins), got '$1'" >&2; usage >&2; exit 2
+    fi
+    port=""
+    for p in $ALL_PORTS; do
+      code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "${auth[@]}" "http://127.0.0.1:$p/has?plugin=$name&command=${2:-}" 2>/dev/null)
+      [ "$code" = 200 ] && { port=$p; break; }
+    done
+    if [ -z "$port" ]; then
+      printf '{\n  "ok": false,\n  "error": %s\n}\n' "$(json_string "no open app has 'adobe $name ${2:-}': open the app it belongs to (adobe pr $name / adobe ae $name list them), or run adobe pr reload / adobe ae reload after adobe plugins add")"
+      exit 3
+    fi
+    ;;
+esac
+
+if [ "${1:-}" = release ]; then
+  curl -s --max-time 5 -X POST "${auth[@]}" "http://127.0.0.1:$port/release" >/dev/null
+  printf '{\n  "ok": true\n}\n'
+  exit 0
+fi
+
+queue_notice "$port"
+
+form=(--data-urlencode "cwd=$PWD")
+for arg in "$@"; do form+=(--data-urlencode "a=$arg"); done
+
+# The request runs in the background while this watches the app for a dialog: After Effects can't answer at all while
+# one is up, so the caller is the one who can tell. Two sightings in a row (1.5 s apart) after 3 s count.
+BASELINE=$(baseline "$port")
+out_file=$(mktemp "${TMPDIR:-/tmp}/adobe-cli.XXXXXX")
+curl -sS --max-time "$TIMEOUT" "${auth[@]}" -w '\n%{http_code}' "${form[@]}" "http://127.0.0.1:$port/run" > "$out_file" 2>/dev/null &
+curl_pid=$!
+seen=0; waited=0
+while kill -0 "$curl_pid" 2>/dev/null; do
+  sleep 0.1; waited=$((waited + 1))
+  if [ "$waited" -ge 30 ] && [ $((waited % 15)) -eq 0 ] && [ -n "$DIALOGS" ]; then
+    found=$(dialogs "$port")
+    if [ -n "$found" ] && [ "$found" != "[]" ]; then seen=$((seen + 1)); else seen=0; fi
+    if [ "$seen" -ge 2 ]; then
+      kill "$curl_pid" 2>/dev/null; wait "$curl_pid" 2>/dev/null; rm -f "$out_file"
+      printf '{\n  "ok": false,\n  "blocked": true,\n  "error": %s,\n  "dialogs": %s\n}\n' "$(json_string "$(app_label "$port") is blocked on a dialog. Someone has to dismiss it in the app; nothing was retried, and the script continues once it is dismissed.")" "$found"
+      exit 3
+    fi
+  fi
+done
+wait "$curl_pid"; status=$?
+response=$(cat "$out_file"); rm -f "$out_file"
+if [ $status -eq 7 ] || [ $status -eq 52 ] || [ $status -eq 56 ]; then unreachable "$port"; fi
+if [ $status -eq 28 ]; then
+  printf '{\n  "ok": false,\n  "error": "%s did not answer within %ss (adobe queue shows what it is busy with)."\n}\n' "$(app_label "$port")" "$TIMEOUT"
+  exit 3
+fi
+if [ $status -ne 0 ]; then printf '{\n  "ok": false,\n  "error": "curl failed (%s)"\n}\n' "$status"; exit 3; fi
+
+code="${response##*$'\n'}"
+body="${response%$'\n'*}"
+printf '%s\n' "${body%$'\n'}"
+case "$code" in
+  200) exit 0 ;;
+  400) exit 2 ;;
+  401|403|409) exit 3 ;;
+  *) exit 1 ;;
+esac

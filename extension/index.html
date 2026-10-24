@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Adobe CLI</title>
+<style>body{background:#232323;color:#ccc;font:13px -apple-system,Segoe UI,sans-serif;margin:16px}b{color:#fff}</style></head>
+<body>
+<div id="status">Starting…</div>
+<script>
+  // The extension folder, as a plain path on Mac and Windows.
+  var root = decodeURI(window.__adobe_cep__.getSystemPath("extension")).replace(/^file:\/\/\/?(?=[A-Za-z]:)/, "").replace(/^file:\/\//, "");
+  require(root + "/server.js").start(root, function (text) { document.getElementById("status").innerHTML = text; });
+</script>
+</body>
+</html>
